@@ -1,4 +1,6 @@
 import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from preisach import PreisachModel
@@ -24,6 +26,10 @@ model = PreisachModel(u_range=(-1.0, 1.0), n_ab=80, gamma=1.0)
 
 # compute whole trajectory
 f_t = np.array([model(u) for u in u_t])
+f_min, f_max = np.min(f_t), np.max(f_t)
+if np.allclose(f_min, f_max):          # perfectly flat
+    f_min -= 0.1
+    f_max += 0.1
 
 # ------------------------------------------------------------------
 # 3.  ANIMATION
@@ -36,6 +42,9 @@ ax_u   = ax[0,0]   # input
 ax_f   = ax[0,1]   # output
 ax_lo  = ax[1,0]   # hysteresis loop
 ax_tri = ax[1,1]   # triangle
+
+ax_f.set_ylim(f_min*1.1, f_max*1.1)
+ax_lo.set_ylim(f_min*1.1, f_max*1.1)
 
 line_u,   = ax_u.plot([], [], lw=2, color='C0')
 line_f,   = ax_f.plot([], [], lw=2, color='C1')
@@ -69,6 +78,6 @@ def animate(n):
     return line_u, line_f, line_lo, tri_img
 
 ani = animation.FuncAnimation(fig, animate, frames=NT, interval=20, blit=True)
+ani.save('Plots/preisach_animation.mp4', writer = 'ffmpeg', fps = 30, dpi = 150)
 plt.tight_layout()
 plt.show()
-ani.save('Plots/preisach_animation.mp4', writer = 'ffmpeg', fps = 30, dpi = 150)
