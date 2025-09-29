@@ -1,3 +1,4 @@
+# preisach.py
 import numpy as np
 from scipy.interpolate import RectBivariateSpline
 
@@ -12,13 +13,13 @@ class PreisachModel:
         self.n_ab = n_ab
         self.gamma = gamma
 
-        # Grids
+        # Build α, β grids
         self.alpha_grid = np.linspace(self.u_min, self.u_max, n_ab)
         self.beta_grid  = np.linspace(self.u_min, self.u_max, n_ab)
         self.alpha_mesh, self.beta_mesh = np.meshgrid(
             self.alpha_grid, self.beta_grid, indexing='ij')
 
-        # Everett function F(α,β) = γ(α−β)²/2
+        # Everett function F(α,β) = γ(α−β)² / 2
         self.everett = self.gamma * (self.alpha_mesh - self.beta_mesh) ** 2 / 2
         self.everett[self.alpha_mesh < self.beta_mesh] = 0.0
         self._F_spline = RectBivariateSpline(
@@ -33,8 +34,7 @@ class PreisachModel:
         return float(self._F_spline(alpha, beta))
 
     def clear_history(self):
-        """Start from negative saturation: all relays down."""
-        # Turning points: [β₀, α₁, β₁, α₂, β₂, ...]
+        """Reset to negative saturation: all relays down."""
         self.turning_points = [self.u_min]
 
     def __call__(self, u):
@@ -44,100 +44,91 @@ class PreisachModel:
 
     def _update_memory_line(self, u):
         tp = self.turning_points
+
+        # SAFETY: ensure non-empty state
         if len(tp) == 0:
             tp.append(self.u_min)
 
         # Wiping-out property
         while len(tp) >= 2:
-            if len(tp) % 2 == 0:  # last move: down → now going up?
+            if len(tp) % 2 == 0:  # last segment was decreasing → now increasing?
                 if u <= tp[-1]:
                     break
-                # Remove all (α_prev, β_prev) with α_prev <= u
+                # Remove obsolete maxima/minima
                 while len(tp) >= 2 and tp[-2] <= u:
                     tp.pop()  # β
                     tp.pop()  # α
                 break
-            else:  # last move: up → now going down?
+            else:  # last segment was increasing → now decreasing?
                 if u >= tp[-1]:
                     break
-                # Remove all (α_prev, β_prev) with β_prev >= u
                 while len(tp) >= 2 and tp[-2] >= u:
                     tp.pop()  # α
                     tp.pop()  # β
                 break
 
-        # Add new turning point if direction changes
+        # Add new turning point only on reversal
         if len(tp) == 1:
             if u > tp[-1]:
                 tp.append(u)
         else:
-            last_was_up = (len(tp) % 2 == 1)  # odd length → last segment up
+            last_was_up = (len(tp) % 2 == 1)  # odd → last move was up
             if (last_was_up and u < tp[-1]) or (not last_was_up and u > tp[-1]):
                 tp.append(u)
 
     def _compute_output(self):
         tp = self.turning_points
-        u = tp[-1]  # current input
+        f = -self._F(self.u_max, self.u_min)  # negative saturation
 
-        # Full triangle integral (negative saturation)
-        f = -self._F(self.u_max, self.u_min)
-
-        # Sum over completed rectangles
         for k in range(1, len(tp)):
             if k % 2 == 1:  # tp[k] is α_k (upward turning point)
-                alpha_k = tp[k]
-                beta_km1 = tp[k - 1]
-                f += 2 * self._F(alpha_k, beta_km1)
+                f += 2 * self._F(tp[k], tp[k - 1])
             else:  # tp[k] is β_k (downward turning point)
-                alpha_km1 = tp[k - 1]
-                beta_k = tp[k]
-                f -= 2 * self._F(alpha_km1, beta_k)
-
+                f -= 2 * self._F(tp[k - 1], tp[k])
         return f
 
     def triangle_mask(self):
-        """Generate mask for Preisach triangle visualization."""
+        """Return mask for Preisach triangle visualization."""
         n = self.n_ab
         mask = np.zeros((n, n))
-
         tp = self.turning_points[:]
+
         if len(tp) == 1:
-            # All relays down → S− everywhere
             mask[:] = -1
         else:
-            # Fill S− regions (relays = -1)
+            # Fill S− (relays = -1)
             for i in range(0, len(tp) - 1, 2):
                 beta_i = tp[i]
                 alpha_ip1 = tp[i + 1] if i + 1 < len(tp) else tp[-1]
-                i_alpha = np.searchsorted(self.alpha_grid, alpha_ip1, side='right')
-                j_beta = np.searchsorted(self.beta_grid, beta_i, side='left')
-                mask[i_alpha:, :j_beta] = -1
+                i_a = np.searchsorted(self.alpha_grid, alpha_ip1, side='right')
+                j_b = np.searchsorted(self.beta_grid, beta_i, side='left')
+                mask[i_a:, :j_b] = -1
 
-            # Fill S+ regions (relays = +1)
+            # Fill S+ (relays = +1)
             for i in range(1, len(tp) - 1, 2):
                 alpha_i = tp[i]
                 beta_ip1 = tp[i + 1] if i + 1 < len(tp) else tp[-1]
-                i_alpha = np.searchsorted(self.alpha_grid, alpha_i, side='left')
-                j_beta = np.searchsorted(self.beta_grid, beta_ip1, side='right')
-                mask[:i_alpha, j_beta:] = 1
+                i_a = np.searchsorted(self.alpha_grid, alpha_i, side='left')
+                j_b = np.searchsorted(self.beta_grid, beta_ip1, side='right')
+                mask[:i_a, j_b:] = 1
 
-            # Handle final incomplete segment
-            if len(tp) % 2 == 1:  # last segment: increasing → S+ for α ≤ u, β ≥ last_min
+            # Final segment
+            if len(tp) % 2 == 1:  # last segment: increasing
                 u_curr = tp[-1]
                 last_min = tp[-2]
-                i_alpha = np.searchsorted(self.alpha_grid, u_curr, side='right')
-                j_beta = np.searchsorted(self.beta_grid, last_min, side='left')
-                mask[:i_alpha, j_beta:] = 1
-            else:  # last segment: decreasing → S− for α ≥ last_max, β ≤ u
+                i_a = np.searchsorted(self.alpha_grid, u_curr, side='right')
+                j_b = np.searchsorted(self.beta_grid, last_min, side='left')
+                mask[:i_a, j_b:] = 1
+            else:  # last segment: decreasing
                 u_curr = tp[-1]
                 last_max = tp[-2]
-                i_alpha = np.searchsorted(self.alpha_grid, last_max, side='left')
-                j_beta = np.searchsorted(self.beta_grid, u_curr, side='right')
-                mask[i_alpha:, :j_beta] = -1
+                i_a = np.searchsorted(self.alpha_grid, last_max, side='left')
+                j_b = np.searchsorted(self.beta_grid, u_curr, side='right')
+                mask[i_a:, :j_b] = -1
 
-        # Enforce α ≥ β (triangle domain)
+        # Enforce α ≥ β
         for i in range(n):
-            for j in range(i):
+            for j in range(n):
                 if self.alpha_grid[i] < self.beta_grid[j]:
                     mask[i, j] = 0
 
