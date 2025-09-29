@@ -74,4 +74,4 @@ plt.tight_layout()
 plt.show()
 
 # Optional: save animation
-# ani.save('Plots/preisach_animation.mp4', writer='ffmpeg', fps=30, dpi=150)
+ani.save('Plots/preisach_animation.mp4', writer='ffmpeg', fps=30, dpi=150)
