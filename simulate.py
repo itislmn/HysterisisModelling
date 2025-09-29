@@ -44,4 +44,5 @@ ani = animation.FuncAnimation(fig, animate, frames=NT, interval=20, blit=True)
 plt.tight_layout()
 plt.show()
 
-ani.save('Plots/preisach_animation.mp4', writer='ffmpeg', fps = 30, dpi = 150)
+# Optional: save animation (ensure 'Plots' folder exists)
+ani.save('Plots/preisach_animation.mp4', writer='ffmpeg', fps=30, dpi=150)

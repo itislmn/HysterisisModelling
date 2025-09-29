@@ -9,6 +9,8 @@ class PreisachModel:
 
     def __init__(self, u_range=(-1.0, 1.0), gamma=1.0):
         self.u_min, self.u_max = u_range
+        if self.u_min >= self.u_max:
+            raise ValueError("u_min must be < u_max")
         self.gamma = gamma
         self.clear_history()
 
@@ -27,26 +29,26 @@ class PreisachModel:
         self.turning_points = [self.u_min]  # β₀
 
     def __call__(self, u):
+        # Clamp input to physical bounds (optional but safe)
+        u = max(self.u_min, min(self.u_max, u))
         tp = self.turning_points
 
-        # --- Wiping-out and update ---
-        while len(tp) >= 2:
-            if len(tp) % 2 == 0:  # last segment: decreasing → now increasing?
-                if u <= tp[-1]:
-                    break
-                # Remove all (α_k, β_k) with α_k <= u
-                while len(tp) >= 2 and tp[-2] <= u:
-                    tp.pop()  # β_k
-                    tp.pop()  # α_k
-                break
-            else:  # last segment: increasing → now decreasing?
-                if u >= tp[-1]:
-                    break
-                # Remove all (α_k, β_k) with β_k >= u
-                while len(tp) >= 2 and tp[-2] >= u:
-                    tp.pop()  # α_k
-                    tp.pop()  # β_k
-                break
+        # --- Wiping-out property ---
+        if len(tp) >= 2:
+            if len(tp) % 2 == 0:
+                # Last move was DOWN (tp ends with α_k), now possibly increasing
+                if u > tp[-1]:
+                    # Wipe out all (α_i, β_i) with α_i <= u, but keep β₀
+                    while len(tp) > 2 and tp[-2] <= u:
+                        tp.pop()  # β_i
+                        tp.pop()  # α_i
+            else:
+                # Last move was UP (tp ends with β_k), now possibly decreasing
+                if u < tp[-1]:
+                    # Wipe out all (α_i, β_i) with β_i >= u
+                    while len(tp) > 2 and tp[-2] >= u:
+                        tp.pop()  # α_i
+                        tp.pop()  # β_i
 
         # --- Add new turning point only on reversal ---
         if len(tp) == 1:
@@ -54,9 +56,12 @@ class PreisachModel:
             if u > tp[-1]:
                 tp.append(u)
         else:
-            # Safe: tp[-1] exists because len(tp) >= 2
-            last_segment_was_up = (len(tp) % 2 == 1)  # odd length → last move was up
-            if (last_segment_was_up and u < tp[-1]) or (not last_segment_was_up and u > tp[-1]):
+            # Determine current direction from last segment
+            # Even length → last move was UP (ended at α) → now decreasing
+            # Odd length  → last move was DOWN (ended at β) → now increasing
+            last_was_up = (len(tp) % 2 == 0)  # even → last was up
+            last_u = tp[-1]
+            if (last_was_up and u < last_u) or (not last_was_up and u > last_u):
                 tp.append(u)
 
         # --- Compute output using Slide 64 formula ---
@@ -65,24 +70,24 @@ class PreisachModel:
         n = len(tp)
         # Sum from k=1 to n-1
         for k in range(1, n):
-            if k % 2 == 1:  # tp[k] is α_k
+            if k % 2 == 1:  # tp[k] is α_k (odd index: 1,3,5,...)
                 alpha_k = tp[k]
                 beta_km1 = tp[k - 1]
                 f += 2 * self._F(alpha_k, beta_km1)
-            else:  # tp[k] is β_k
+            else:  # tp[k] is β_k (even index: 2,4,6,...)
                 alpha_km1 = tp[k - 1]
                 beta_k = tp[k]
                 f -= 2 * self._F(alpha_km1, beta_k)
 
         # Final term: depends on current direction
         if n % 2 == 1:
-            # Last point is α_n → currently decreasing → subtract 2*F(α_n, u)
-            alpha_n = tp[-1]
-            f -= 2 * self._F(alpha_n, u)
-        else:
-            # Last point is β_n → currently increasing → add 2*F(u, β_n)
+            # Odd length → last point is β_n → currently increasing → add 2*F(u, β_n)
             beta_n = tp[-1]
             f += 2 * self._F(u, beta_n)
+        else:
+            # Even length → last point is α_n → currently decreasing → subtract 2*F(α_n, u)
+            alpha_n = tp[-1]
+            f -= 2 * self._F(alpha_n, u)
 
         return f
 
