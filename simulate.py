@@ -26,11 +26,6 @@ model = PreisachModel(u_range=(-1.0, 1.0), n_ab=80, gamma=1.0)
 
 # compute whole trajectory
 f_t = np.array([model(u) for u in u_t])
-f_min, f_max = np.min(f_t), np.max(f_t)
-if np.allclose(f_min, f_max):          # perfectly flat
-    f_min -= 0.1
-    f_max += 0.1
-
 # ------------------------------------------------------------------
 # 3.  ANIMATION
 # ------------------------------------------------------------------
@@ -63,8 +58,6 @@ ax_lo.set_ylim(np.min(f_t)*1.1, np.max(f_t)*1.1)
 ax_lo.set_xlabel('u');    ax_lo.set_ylabel('f')
 ax_tri.set_xlabel('β');   ax_tri.set_ylabel('α')
 ax_tri.set_title('Preisach triangle')
-ax_f.set_ylim(f_min, f_max)
-ax_lo.set_ylim(f_min, f_max)
 
 def animate(n):
     # update traces
