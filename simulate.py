@@ -43,8 +43,7 @@ ax_f   = ax[0,1]   # output
 ax_lo  = ax[1,0]   # hysteresis loop
 ax_tri = ax[1,1]   # triangle
 
-ax_f.set_ylim(f_min*1.1, f_max*1.1)
-ax_lo.set_ylim(f_min*1.1, f_max*1.1)
+
 
 line_u,   = ax_u.plot([], [], lw=2, color='C0')
 line_f,   = ax_f.plot([], [], lw=2, color='C1')
@@ -64,6 +63,8 @@ ax_lo.set_ylim(np.min(f_t)*1.1, np.max(f_t)*1.1)
 ax_lo.set_xlabel('u');    ax_lo.set_ylabel('f')
 ax_tri.set_xlabel('β');   ax_tri.set_ylabel('α')
 ax_tri.set_title('Preisach triangle')
+ax_f.set_ylim(f_min, f_max)
+ax_lo.set_ylim(f_min, f_max)
 
 def animate(n):
     # update traces
