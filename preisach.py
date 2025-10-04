@@ -1,99 +1,253 @@
-# preisach.py
+#author itislmn
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from matplotlib import gridspec
+from scipy.interpolate import LinearNDInterpolator
+from typing import Tuple, Callable, List
+import copy
+
+def analyticalPreisachFunction2(A: float, Hc: float, sigma: float, beta: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    nom1 = 1
+    den1 = 1 + ((beta - Hc) * sigma / Hc) ** 2
+    nom2 = 1
+    den2 = 1 + ((alpha + Hc) * sigma / Hc) ** 2
+    preisach = A * (nom1 / den1) * (nom2 / den2)
+    # Zero out lower-right triangle (α < β region)
+    for i in range(preisach.shape[0]):
+        preisach[i, (-i - 1):] = 0
+    return preisach
+
+def removeInBetween(arr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    if len(arr) < 3:
+        return arr, np.ones(len(arr), dtype=bool)
+    keep = np.ones(len(arr), dtype=bool)
+    for i in range(1, len(arr) - 1):
+        if arr[i] == arr[i - 1] == arr[i + 1]:
+            keep[i] = False
+    return arr[keep], keep
+
+def removeRedundantPoints(pointsX: np.ndarray, pointsY: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    pointsX, mask = removeInBetween(pointsX)
+    pointsY = pointsY[mask]
+    pointsY, mask = removeInBetween(pointsY)
+    pointsX = pointsX[mask]
+    return pointsX, pointsY
+
+def preisachIntegration(w: float, Z: np.ndarray) -> np.ndarray:
+    flipped = np.fliplr(np.flipud(w * Z))
+    flipped_integral = np.cumsum(np.cumsum(flipped, axis=0), axis=1)
+    return np.fliplr(np.flipud(flipped_integral))
 
 class PreisachModel:
-    """
-    Scalar Preisach model with uniform density μ(α,β) = γ.
-    Implements the exact formula from TU Darmstadt Lecture 7, Slide 64.
-    """
+    def __init__(self, n: int, alpha0: float) -> None:
+        self.n = n
+        self.alpha0 = alpha0
+        self.beta0 = alpha0
+        x = np.linspace(-self.beta0, self.beta0, n - 1)
+        y = np.linspace(-self.alpha0, self.alpha0, n - 1)
+        self.width = 2 * alpha0 / (n - 1)
+        self.gridX, self.gridY = np.meshgrid(x, y)
+        self.gridY = np.flipud(self.gridY)  # align with Preisach triangle definition
 
-    def __init__(self, u_range=(-1.0, 1.0), gamma=1.0):
-        self.u_min, self.u_max = u_range
-        if self.u_min >= self.u_max:
-            raise ValueError("u_min must be < u_max")
-        self.gamma = gamma
-        self.clear_history()
+        self.interfaceX = np.array([-self.beta0, -self.beta0], dtype=np.float64)
+        self.interfaceY = np.array([-self.alpha0, -self.alpha0], dtype=np.float64)
+        self.historyInterfaceX: List[np.ndarray] = []
+        self.historyInterfaceY: List[np.ndarray] = []
+        self.historyU = np.array([-self.alpha0], dtype=np.float64)
+        self.historyOut = np.array([], dtype=np.float64)
+        self.state = 'ascending'
+        self.stateOld = 'ascending'
+        self.stateChanged = False
+        self.everett = lambda beta, alpha: np.zeros_like(beta)
 
-    def _F(self, alpha, beta):
-        """Everett function F(α,β) = γ(α−β)² / 2 for α ≥ β, else 0."""
-        if alpha <= beta:
-            return 0.0
-        return 0.5 * self.gamma * (alpha - beta) ** 2
-
-    def clear_history(self):
-        """
-        Start from negative saturation.
-        Memory line: list of turning points [β₀, α₁, β₁, α₂, β₂, ...]
-        We always keep β₀ = u_min as the first point.
-        """
-        self.turning_points = [self.u_min]  # β₀
-
-    def __call__(self, u):
-        # Clamp input to physical bounds (optional but safe)
-        u = max(self.u_min, min(self.u_max, u))
-        tp = self.turning_points
-
-        # --- Wiping-out property ---
-        if len(tp) >= 2:
-            if len(tp) % 2 == 0:
-                # Last move was DOWN (tp ends with α_k), now possibly increasing
-                if u > tp[-1]:
-                    # Wipe out all (α_i, β_i) with α_i <= u, but keep β₀
-                    while len(tp) > 2 and tp[-2] <= u:
-                        tp.pop()  # β_i
-                        tp.pop()  # α_i
-            else:
-                # Last move was UP (tp ends with β_k), now possibly decreasing
-                if u < tp[-1]:
-                    # Wipe out all (α_i, β_i) with β_i >= u
-                    while len(tp) > 2 and tp[-2] >= u:
-                        tp.pop()  # α_i
-                        tp.pop()  # β_i
-
-        # --- Add new turning point only on reversal ---
-        if len(tp) == 1:
-            # Only β₀ exists → if moving up, add first α₁
-            if u > tp[-1]:
-                tp.append(u)
+    def __call__(self, u: float) -> float:
+        if u > self.historyU[-1]:
+            self.state = 'ascending'
+        elif u < self.historyU[-1]:
+            self.state = 'descending'
         else:
-            # Determine current direction from last segment
-            # Even length → last move was UP (ended at α) → now decreasing
-            # Odd length  → last move was DOWN (ended at β) → now increasing
-            last_was_up = (len(tp) % 2 == 0)  # even → last was up
-            last_u = tp[-1]
-            if (last_was_up and u < last_u) or (not last_was_up and u > last_u):
-                tp.append(u)
+            self.state = self.stateOld
 
-        # --- Compute output using Slide 64 formula ---
-        f = -self._F(self.u_max, self.u_min)  # -F(α₀, β₀)
+        self.stateChanged = (self.state != self.stateOld)
 
-        n = len(tp)
-        # Sum from k=1 to n-1
-        for k in range(1, n):
-            if k % 2 == 1:  # tp[k] is α_k (odd index: 1,3,5,...)
-                alpha_k = tp[k]
-                beta_km1 = tp[k - 1]
-                f += 2 * self._F(alpha_k, beta_km1)
-            else:  # tp[k] is β_k (even index: 2,4,6,...)
-                alpha_km1 = tp[k - 1]
-                beta_k = tp[k]
-                f -= 2 * self._F(alpha_km1, beta_k)
+        # Current interface (without current u)
+        pointsX = self.interfaceX[:-1].copy()
+        pointsY = self.interfaceY[:-1].copy()
 
-        # Final term: depends on current direction
-        if n % 2 == 1:
-            # Odd length → last point is β_n → currently increasing → add 2*F(u, β_n)
-            beta_n = tp[-1]
-            f += 2 * self._F(u, beta_n)
-        else:
-            # Even length → last point is α_n → currently decreasing → subtract 2*F(α_n, u)
-            alpha_n = tp[-1]
-            f -= 2 * self._F(alpha_n, u)
+        if self.stateChanged:
+            pointsX = np.append(pointsX, self.historyU[-1])
+            pointsY = np.append(pointsY, self.historyU[-1])
 
-        return f
+        if self.state == 'ascending':
+            pointsY[pointsY <= u] = u
+            pointsY[-1] = u
+        elif self.state == 'descending':
+            pointsX[pointsX >= u] = u
+            pointsX[-1] = u
 
-    def triangle_mask(self):
-        """Dummy placeholder for animation (optional)."""
-        n = 80
-        mask = -np.ones((n, n))
-        extent = [self.u_min, self.u_max, self.u_min, self.u_max]
-        return mask, extent
+        self.interfaceX = np.append(pointsX, u)
+        self.interfaceY = np.append(pointsY, u)
+        self.interfaceX, self.interfaceY = removeRedundantPoints(self.interfaceX, self.interfaceY)
+
+        self.stateOld = self.state
+        self.historyInterfaceX.append(self.interfaceX.copy())
+        self.historyInterfaceY.append(self.interfaceY.copy())
+        self.historyU = np.append(self.historyU, u)
+        output = self.calculateOutput()
+        self.historyOut = np.append(self.historyOut, output)
+        return output
+
+    def resetHistory(self) -> None:
+        self.historyInterfaceX = []
+        self.historyInterfaceY = []
+        self.historyU = np.array([-self.alpha0], dtype=np.float64)
+        self.historyOut = np.array([], dtype=np.float64)
+        self.state = 'ascending'
+        self.stateOld = 'ascending'
+        self.stateChanged = False
+
+    def setNegSatState(self) -> None:
+        self.interfaceX = np.array([-self.beta0, -self.beta0], dtype=np.float64)
+        self.interfaceY = np.array([-self.alpha0, -self.alpha0], dtype=np.float64)
+        self.resetHistory()
+
+    def setDemagState(self, n: int = 150) -> None:
+        self.setNegSatState()
+        excitation = np.linspace(1, 0, n)
+        excitation[1::2] = -excitation[1::2]
+        for val in excitation:
+            self(val * self.alpha0)
+        self.resetHistory()
+
+    def invert(self) -> 'PreisachModel':
+        invModel = PreisachModel(self.n, self.alpha0)
+        print('Inverting Model...')
+
+        FODs = []
+        Mk = []
+        mk = []
+        invEverettVals = []
+
+        alphas = np.linspace(-self.alpha0, self.alpha0, self.n - 1)
+        for alpha in alphas:
+            betas = np.linspace(-self.beta0, alpha, max(1, int((alpha + self.alpha0) / self.width)))
+            for beta in betas:
+                self.setNegSatState()
+                out1 = self(alpha)
+                out2 = self(beta)
+                FODs.append((alpha, beta))
+                Mk.append(out1)
+                mk.append(out2)
+                invEverettVals.append(0.5 * (alpha - beta))
+
+        if not FODs:
+            raise RuntimeError("No FODs generated for inversion.")
+
+        points = np.column_stack((mk, Mk))
+        Z = np.array(invEverettVals)
+        invEverettInterp = LinearNDInterpolator(points, Z, fill_value=0.0)
+        invModel.setEverettFunction(invEverettInterp)
+        print('Model inversion successful!')
+        return invModel
+
+    def calculateOutput(self) -> float:
+        total = 0.0
+        for i in range(1, len(self.interfaceX)):
+            Mk = self.interfaceY[i]
+            mk = self.interfaceX[i]
+            mkOld = self.interfaceX[i - 1]
+            total += self.everett(mkOld, Mk) - self.everett(mk, Mk)
+        return -self.everett(-self.beta0, self.alpha0) + 2 * total
+
+    def setEverettFunction(self, func: Callable) -> None:
+        self.everett = func
+
+    def showEverettFunction(self, fig: plt.Figure) -> None:
+        ax = fig.add_subplot(111, projection='3d')
+        Z = self.everett(self.gridX, self.gridY)
+        ax.plot_surface(self.gridX, self.gridY, Z, cmap='viridis')
+        ax.set_title('Everett Function')
+        ax.set_xlabel('β')
+        ax.set_ylabel('α')
+        ax.set_zlabel('E(β, α)')
+        plt.show()
+
+    def animateHysteresis(self) -> animation.FuncAnimation:
+        u_vals = self.historyU[1:]
+        out_vals = self.historyOut
+        interfaces_x = self.historyInterfaceX
+        interfaces_y = self.historyInterfaceY
+
+        if len(u_vals) != len(out_vals) or len(u_vals) != len(interfaces_x):
+            raise ValueError("History length mismatch in animation.")
+
+        frames = len(u_vals)
+        t_vals = np.arange(len(u_vals))
+
+        fig, axs = plt.subplots(2, 2, figsize=(14, 10))
+        (ax1, ax2), (ax3, ax4) = axs
+
+        # --- Top-left: Input vs time
+        ax1.plot(t_vals, u_vals, 'b-', linewidth=1, label='u(t)')
+        ax1.set_xlim(0, len(t_vals) - 1)
+        ax1.set_ylim(-self.alpha0 * 1.1, self.alpha0 * 1.1)
+        ax1.set_xlabel('Time step')
+        ax1.set_ylabel('Input u(t)')
+        ax1.grid(True)
+        line1, = ax1.plot([], [], 'ro', markersize=6)
+
+        # --- Top-right: Output vs time
+        ax2.plot(t_vals, out_vals, 'g-', linewidth=1, label='f(t)')
+        ax2.set_xlim(0, len(t_vals) - 1)
+        ax2.set_ylim(np.min(out_vals) * 1.1, np.max(out_vals) * 1.1)
+        ax2.set_xlabel('Time step')
+        ax2.set_ylabel('Output f(t)')
+        ax2.grid(True)
+        line2, = ax2.plot([], [], 'ro', markersize=6)
+
+        # --- Bottom-left: Hysteresis loop (f vs u)
+        ax3.plot(u_vals, out_vals, 'm-', linewidth=1)
+        ax3.set_xlabel('Input u(t)')
+        ax3.set_ylabel('Output f(t)')
+        ax3.set_title('Hysteresis Loop')
+        ax3.grid(True)
+        line3, = ax3.plot([], [], 'ro', markersize=6)
+
+        # --- Bottom-right: Preisach triangle
+        tri_x = [-self.beta0, self.beta0, -self.beta0, -self.beta0]
+        tri_y = [-self.alpha0, self.alpha0, self.alpha0, -self.alpha0]
+        ax4.plot(tri_x, tri_y, 'k-', linewidth=2)
+        line4, = ax4.plot([], [], 'r-', linewidth=2, label='L(t)')
+        ax4.set_xlim(-self.beta0 * 1.1, self.beta0 * 1.1)
+        ax4.set_ylim(-self.alpha0 * 1.1, self.alpha0 * 1.1)
+        ax4.set_xlabel('β')
+        ax4.set_ylabel('α')
+        ax4.set_aspect('equal')
+        ax4.grid(True)
+        ax4.set_title('Preisach Plane')
+        ax4.legend(loc='lower right')
+
+        def update_line(num):
+            # Update time-series dots
+            line1.set_data([t_vals[num]], [u_vals[num]])
+            line2.set_data([t_vals[num]], [out_vals[num]])
+            # Update hysteresis dot
+            line3.set_data([u_vals[num]], [out_vals[num]])
+            # Update staircase
+            line4.set_data(interfaces_x[num], interfaces_y[num])
+            return line1, line2, line3, line4
+
+        anim = animation.FuncAnimation(
+            fig,
+            update_line,
+            frames=frames,
+            interval=30,
+            blit=True,
+            repeat=False
+        )
+
+        plt.tight_layout()
+        plt.show()
+        return anim
+

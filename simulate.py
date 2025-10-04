@@ -1,48 +1,86 @@
-# simulate.py
 import numpy as np
 import matplotlib
-matplotlib.use("TkAgg")
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from preisach import PreisachModel
+from scipy.interpolate import LinearNDInterpolator
+import os
+from preisach import PreisachModel, analyticalPreisachFunction2, preisachIntegration
 
-# Input signal
-T_END = 4 * np.pi
-NT = 800
-time = np.linspace(0, T_END, NT)
+# -------------------------------
+# Main Execution
+# -------------------------------
+# Ensure output directory exists
+os.makedirs('Plots', exist_ok=True)
 
-def my_input(t):
-    return 0.7 * np.sin(t) + 0.3 * np.sin(3 * t)
+if __name__ == "__main__":
+    model = PreisachModel(n=200, alpha0=1.0)
+    gridX, gridY = model.gridX, model.gridY
+    width = model.width
 
-u_t = my_input(time)
+    # Use analytical Preisach function 2
+    A = 1.0
+    Hc = 0.01
+    sigma = 0.03
+    preisach = analyticalPreisachFunction2(A, Hc, sigma, gridX, gridY)
 
-# Model
-model = PreisachModel(u_range=(-1.0, 1.0), gamma=1.0)
-f_t = np.array([model(u) for u in u_t])
+    # Compute Everett function
+    everett = preisachIntegration(width, preisach)
+    everett /= np.max(everett)  # Normalize
 
-# Animation
-fig, ax = plt.subplots(2, 2, figsize=(10, 8))
-fig.canvas.manager.set_window_title('Preisach Model – TU Darmstadt')
+    # Interpolate
+    points = np.column_stack((gridX.ravel(), gridY.ravel()))
+    values = everett.ravel()
+    everettInterp = LinearNDInterpolator(points, values, fill_value=0.0)
+    model.setEverettFunction(everettInterp)
 
-(line_u,) = ax[0,0].plot([], [], 'b-', lw=2)
-(line_f,) = ax[0,1].plot([], [], 'r-', lw=2)
-(line_lo,) = ax[1,0].plot([], [], 'g-', lw=2)
-(tri,) = ax[1,1].plot([], [], 'k.')
+    # Show Everett function
+    fig = plt.figure(figsize=(8, 6))
+    model.showEverettFunction(fig)
 
-ax[0,0].set_xlim(0, T_END); ax[0,0].set_ylim(-1.1, 1.1); ax[0,0].set_ylabel('u(t)')
-ax[0,1].set_xlim(0, T_END); ax[0,1].set_ylim(-1.1, 1.1); ax[0,1].set_ylabel('f(t)')
-ax[1,0].set_xlim(-1.1, 1.1); ax[1,0].set_ylim(-1.1, 1.1); ax[1,0].set_xlabel('u'); ax[1,0].set_ylabel('f')
-ax[1,1].set_visible(False)  # disable triangle for now
+    # Invert model
+    invModel = model.invert()
+    fig = plt.figure(figsize=(8, 6))
+    invModel.showEverettFunction(fig)
 
-def animate(i):
-    line_u.set_data(time[:i+1], u_t[:i+1])
-    line_f.set_data(time[:i+1], f_t[:i+1])
-    line_lo.set_data(u_t[:i+1], f_t[:i+1])
-    return line_u, line_f, line_lo
+    # Generate input signal
+    nSamps = 2500
+    phi = np.linspace(0, 2 * np.pi + np.pi / 2, nSamps)
 
-ani = animation.FuncAnimation(fig, animate, frames=NT, interval=20, blit=True)
-plt.tight_layout()
-plt.show()
+    sawtooth = np.zeros(nSamps)
+    sawtooth[phi < np.pi / 2] = 0.7 * 2 / np.pi * phi[phi < np.pi / 2]
+    sawtooth[(phi >= np.pi / 2) & (phi < 3 * np.pi / 2)] = -0.7 * 2 / np.pi * (phi[(phi >= np.pi / 2) & (phi < 3 * np.pi / 2)] - np.pi)
+    sawtooth[phi >= 3 * np.pi / 2] = 0.7 * 2 / np.pi * (phi[phi >= 3 * np.pi / 2] - 2 * np.pi)
 
-# Optional: save animation (ensure 'Plots' folder exists)
-ani.save('Plots/preisach_animation.mp4', writer='ffmpeg', fps=30, dpi=150)
+    input_signal = 0.15 * np.sin(30 * phi) + sawtooth
+
+    # Initialize models in demagnetized state
+    model.setDemagState(80)
+    invModel.setDemagState(80)
+
+    # Simulate cascade: input → model → invModel
+    middle = np.zeros_like(input_signal)
+    output = np.zeros_like(input_signal)
+    for i, u in enumerate(input_signal):
+        middle[i] = model(u)
+        output[i] = invModel(middle[i])
+
+    # Plot signals
+    plt.figure(figsize=(10, 6))
+    plt.plot(input_signal, label='Input')
+    plt.plot(middle, label='Middle (Forward Model Output)')
+    plt.plot(output, label='Output (Inverse Model Output)')
+    plt.legend()
+    plt.title('Forward + Inverse Preisach Model')
+    plt.xlabel('Sample')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+    # Animate both models
+    sim1 = model.animateHysteresis()
+    sim2 = invModel.animateHysteresis()
+
+    # Optional: Save animations
+    sim1.save('Plots/preisach_simulation.mp4', fps=30, dpi=150)
+    sim2.save('Plots/hysteresis_inverted_simulation.mp4', fps=30, dpi=150)
+
